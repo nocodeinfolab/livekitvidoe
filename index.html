@@ -156,15 +156,24 @@
                 try {
                     const room = new LivekitClient.Room({
                         adaptiveStream: true,
-                        dynacast: true
+                        dynacast: true,
+                        // Add reconnection options
+                        reconnectPolicy: {
+                            maxRetries: 5,
+                            backoff: {
+                                initialDelay: 1000,
+                                maxDelay: 5000,
+                                multiplier: 2
+                            }
+                        }
                     });
-                    
+
                     await room.connect(url, token, {
                         autoSubscribe: true,
                     });
-                    
                     return room;
                 } catch (error) {
+                    console.error('Connection failed:', error);
                     throw new Error(`Could not connect to room: ${error.message}`);
                 }
             }
@@ -177,30 +186,38 @@
                 localVideo.muted = true;
                 videoContainer.prepend(localVideo);
 
-                // Get all video track publications (updated for v2)
-                const videoPublications = Array.from(room.localParticipant.tracks.values())
-                    .filter(pub => pub.kind === LivekitClient.Track.Kind.Video);
-
-                // Attach local video tracks
-                videoPublications.forEach(publication => {
-                    if (publication.track) {
-                        publication.track.attach(localVideo);
-                    }
-                });
+                // Safely get video tracks
+                if (room.localParticipant && room.localParticipant.tracks) {
+                    const tracks = Array.from(room.localParticipant.tracks.values());
+                    const videoTracks = tracks.filter(
+                        pub => pub.kind === LivekitClient.Track.Kind.Video
+                    );
+                    
+                    videoTracks.forEach(publication => {
+                        if (publication.track) {
+                            publication.track.attach(localVideo);
+                        }
+                    });
+                }
 
                 // Remote participants
-                room.remoteParticipants.forEach(participant => {
-                    addParticipantVideo(participant);
-                });
+                if (room.remoteParticipants) {
+                    room.remoteParticipants.forEach(participant => {
+                        addParticipantVideo(participant);
+                    });
+                }
             }
-            
-            function addParticipantVideo(participant) {
-                // Get all video track publications (v2 compatible)
-                const videoPublications = Array.from(participant.tracks.values())
-                    .filter(pub => pub.kind === LivekitClient.Track.Kind.Video);
 
-                videoPublications.forEach(publication => {
-                    if (publication.track) {
+            function addParticipantVideo(participant) {
+                if (!participant.tracks) return;
+                
+                const tracks = Array.from(participant.tracks.values());
+                const videoTracks = tracks.filter(
+                    pub => pub.kind === LivekitClient.Track.Kind.Video
+                );
+
+                videoTracks.forEach(publication => {
+                    if (publication.track && publication.isSubscribed) {
                         const video = document.createElement('video');
                         video.autoplay = true;
                         video.setAttribute('data-participant', participant.sid);
