@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LiveKit Video Call with Token Server</title>
+    <title>LiveKit Video Call</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -25,6 +25,12 @@
             margin: 20px 0;
             cursor: pointer;
             border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
         }
         
         #videoContainer {
@@ -32,6 +38,7 @@
             flex-wrap: wrap;
             gap: 10px;
             margin-top: 20px;
+            justify-content: center;
         }
         
         video {
@@ -39,10 +46,21 @@
             height: 225px;
             background-color: #eee;
             border-radius: 8px;
+            object-fit: cover;
         }
         
         #localVideo {
             transform: scaleX(-1); /* Mirror local video */
+        }
+        
+        .status {
+            margin: 10px 0;
+            color: #666;
+        }
+        
+        .error {
+            color: #d32f2f;
+            margin: 10px 0;
         }
     </style>
 </head>
@@ -51,125 +69,172 @@
     <p>Click the button below to start a video call</p>
     
     <button id="startButton">Start Video Call</button>
+    <div id="status" class="status"></div>
+    <div id="error" class="error"></div>
     
     <div id="videoContainer">
         <!-- Video elements will be added here -->
     </div>
 
-    <!-- Include LiveKit client SDK -->
+    <!-- Load LiveKit client from CDN -->
     <script src="https://cdn.jsdelivr.net/npm/livekit-client@latest/dist/livekit-client.umd.min.js"></script>
     
     <script>
-        const startButton = document.getElementById('startButton');
-        const videoContainer = document.getElementById('videoContainer');
-        
-        // Configuration - point this to your backend server
-        const TOKEN_SERVER_URL = 'https://livekittoken.onrender.com/get-token';
-        
-        // Generate a random participant name for demo purposes
-        // In a real app, you might have user authentication
-        const randomName = 'user-' + Math.floor(Math.random() * 10000);
-        const ROOM_NAME = 'default-room';
-        
-        let room;
-        
-        startButton.addEventListener('click', async () => {
-            try {
+        document.addEventListener('DOMContentLoaded', () => {
+            const startButton = document.getElementById('startButton');
+            const videoContainer = document.getElementById('videoContainer');
+            const statusElement = document.getElementById('status');
+            const errorElement = document.getElementById('error');
+            
+            // Configuration
+            const TOKEN_SERVER_URL = 'https://livekittoken.onrender.com/get-token';
+            const ROOM_NAME = 'default-room';
+            const randomName = 'user-' + Math.floor(Math.random() * 10000);
+            
+            let room;
+            
+            // Check if LiveKit client is loaded
+            if (typeof LiveKitClient === 'undefined') {
+                showError('LiveKit client failed to load. Please refresh the page.');
                 startButton.disabled = true;
-                startButton.textContent = 'Connecting...';
-                
-                // Request token from backend
-                const response = await fetch(TOKEN_SERVER_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        roomName: ROOM_NAME,
-                        participantName: randomName
-                    }),
-                });
-                
-                if (!response.ok) {
-                    throw new Error('Failed to get token');
+                return;
+            }
+            
+            startButton.addEventListener('click', async () => {
+                try {
+                    resetUI();
+                    startButton.disabled = true;
+                    updateStatus('Requesting token from server...');
+                    
+                    // 1. Get token from backend
+                    const { token, livekitUrl } = await getToken();
+                    
+                    // 2. Initialize room
+                    updateStatus('Initializing video call...');
+                    room = await connectToRoom(livekitUrl, token);
+                    
+                    // 3. Set up video elements
+                    setupVideoElements();
+                    
+                    // 4. Set up event listeners
+                    setupEventListeners();
+                    
+                    startButton.style.display = 'none';
+                    updateStatus('Connected to video call');
+                    
+                } catch (error) {
+                    console.error('Error:', error);
+                    showError(error.message);
+                    startButton.disabled = false;
+                    startButton.textContent = 'Start Video Call';
                 }
-                
-                const { token, livekitUrl } = await response.json();
-                
-                // Create a new room connection
-                room = new LiveKitClient.Room();
-                
-                // Connect to the room with the token we received
-                await room.connect(livekitUrl, token);
-                
-                startButton.style.display = 'none';
-                
-                // Create local video element
+            });
+            
+            async function getToken() {
+                try {
+                    const response = await fetch(TOKEN_SERVER_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            roomName: ROOM_NAME,
+                            participantName: randomName
+                        }),
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.text();
+                        throw new Error(error || 'Failed to get token');
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    throw new Error(`Could not connect to server: ${error.message}`);
+                }
+            }
+            
+            async function connectToRoom(url, token) {
+                try {
+                    const room = new LiveKitClient.Room({
+                        adaptiveStream: true,
+                        dynacast: true
+                    });
+                    
+                    await room.connect(url, token, {
+                        autoSubscribe: true,
+                    });
+                    
+                    return room;
+                } catch (error) {
+                    throw new Error(`Could not connect to room: ${error.message}`);
+                }
+            }
+            
+            function setupVideoElements() {
+                // Local video
                 const localVideo = document.createElement('video');
                 localVideo.id = 'localVideo';
                 localVideo.autoplay = true;
                 localVideo.muted = true;
-                videoContainer.appendChild(localVideo);
+                videoContainer.prepend(localVideo);
                 
-                // Attach local video track
-                if (room.localParticipant.videoTracks.size > 0) {
-                    const track = Array.from(room.localParticipant.videoTracks.values())[0].track;
-                    attachTrack(track, localVideo);
-                }
-                
-                // Handle remote participant tracks
-                room.participants.forEach(participant => {
-                    setupParticipant(participant);
+                // Attach local video track if available
+                room.localParticipant.videoTracks.forEach(publication => {
+                    if (publication.track) {
+                        publication.track.attach(localVideo);
+                    }
                 });
                 
+                // Remote participants
+                room.participants.forEach(participant => {
+                    addParticipantVideo(participant);
+                });
+            }
+            
+            function addParticipantVideo(participant) {
+                participant.videoTracks.forEach(publication => {
+                    if (publication.track) {
+                        const video = document.createElement('video');
+                        video.autoplay = true;
+                        video.setAttribute('data-participant', participant.sid);
+                        videoContainer.appendChild(video);
+                        publication.track.attach(video);
+                    }
+                });
+            }
+            
+            function setupEventListeners() {
                 room.on('participantConnected', participant => {
-                    setupParticipant(participant);
+                    updateStatus(`${participant.identity} joined the call`);
+                    addParticipantVideo(participant);
                 });
                 
                 room.on('participantDisconnected', participant => {
-                    // Remove video elements when participant leaves
-                    const elements = document.querySelectorAll(`[data-participant="${participant.sid}"]`);
-                    elements.forEach(el => el.remove());
+                    updateStatus(`${participant.identity} left the call`);
+                    document.querySelectorAll(`[data-participant="${participant.sid}"]`).forEach(el => el.remove());
                 });
                 
                 room.on('disconnected', () => {
-                    alert('You have been disconnected from the room');
-                    location.reload();
+                    showError('You have been disconnected');
+                    setTimeout(() => location.reload(), 3000);
                 });
-                
-            } catch (error) {
-                console.error('Error:', error);
-                startButton.disabled = false;
-                startButton.textContent = 'Start Video Call';
-                alert('Failed to connect: ' + error.message);
+            }
+            
+            function updateStatus(message) {
+                statusElement.textContent = message;
+                errorElement.textContent = '';
+            }
+            
+            function showError(message) {
+                errorElement.textContent = message;
+                console.error(message);
+            }
+            
+            function resetUI() {
+                statusElement.textContent = '';
+                errorElement.textContent = '';
+                videoContainer.innerHTML = '';
             }
         });
-        
-        function setupParticipant(participant) {
-            participant.tracks.forEach(trackPub => {
-                if (trackPub.track) {
-                    const video = document.createElement('video');
-                    video.autoplay = true;
-                    video.setAttribute('data-participant', participant.sid);
-                    videoContainer.appendChild(video);
-                    attachTrack(trackPub.track, video);
-                }
-            });
-            
-            participant.on('trackPublished', trackPub => {
-                const video = document.createElement('video');
-                video.autoplay = true;
-                video.setAttribute('data-participant', participant.sid);
-                videoContainer.appendChild(video);
-                attachTrack(trackPub.track, video);
-            });
-        }
-        
-        function attachTrack(track, element) {
-            if (track.kind === 'video') {
-                track.attach(element);
-            }
-        }
     </script>
 </body>
 </html>
