@@ -88,10 +88,12 @@
             
             // Configuration
             const TOKEN_SERVER_URL = 'https://livekittoken.onrender.com/get-token';
+            const LIVEKIT_URL = 'wss://psy-cliniq-s70l8vu6.ojeddah1a.production.livekit.cloud';
             const ROOM_NAME = 'default-room';
             const randomName = 'user-' + Math.floor(Math.random() * 10000);
             
             let room;
+            let localStream;
             
             // Check if LiveKit client is loaded
             if (typeof LivekitClient === 'undefined') {
@@ -104,31 +106,60 @@
                 try {
                     resetUI();
                     startButton.disabled = true;
+                    updateStatus('Checking media permissions...');
+                    
+                    // 1. First get media access
+                    localStream = await getMediaAccess();
+                    if (!localStream) {
+                        startButton.disabled = false;
+                        return;
+                    }
+                    
+                    // 2. Get token from backend
                     updateStatus('Requesting token from server...');
+                    const { token } = await getToken();
                     
-                    // 1. Get token from backend
-                    const { token, livekitUrl } = await getToken();
+                    // 3. Initialize room
+                    updateStatus('Connecting to room...');
+                    room = await connectToRoom(LIVEKIT_URL, token);
                     
-                    // 2. Initialize room
-                    updateStatus('Initializing video call...');
-                    room = await connectToRoom(livekitUrl, token);
-                    
-                    // 3. Set up video elements
+                    // 4. Set up video elements and event listeners
                     setupVideoElements();
-                    
-                    // 4. Set up event listeners
                     setupEventListeners();
                     
                     startButton.style.display = 'none';
-                    updateStatus('Connected to video call');
+                    updateStatus('Video call started!');
                     
                 } catch (error) {
                     console.error('Error:', error);
                     showError(error.message);
+                    if (localStream) {
+                        localStream.getTracks().forEach(track => track.stop());
+                    }
+                    if (room) {
+                        room.disconnect();
+                    }
                     startButton.disabled = false;
-                    startButton.textContent = 'Start Video Call';
+                    startButton.textContent = 'Try Again';
                 }
             });
+            
+            async function getMediaAccess() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: true,
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 },
+                            facingMode: 'user'
+                        }
+                    });
+                    return stream;
+                } catch (error) {
+                    showError(`Could not access media devices: ${error.message}`);
+                    return null;
+                }
+            }
             
             async function getToken() {
                 try {
@@ -148,7 +179,7 @@
                     
                     return await response.json();
                 } catch (error) {
-                    throw new Error(`Could not connect to server: ${error.message}`);
+                    throw new Error(`Token server error: ${error.message}`);
                 }
             }
             
@@ -157,67 +188,70 @@
                     const room = new LivekitClient.Room({
                         adaptiveStream: true,
                         dynacast: true,
-                        // Add reconnection options
-                        reconnectPolicy: {
-                            maxRetries: 5,
-                            backoff: {
-                                initialDelay: 1000,
-                                maxDelay: 5000,
-                                multiplier: 2
-                            }
+                        videoCaptureDefaults: {
+                            resolution: LivekitClient.VideoPresets.h720.resolution
                         }
                     });
-
+                    
                     await room.connect(url, token, {
                         autoSubscribe: true,
                     });
+                    
+                    // Enable camera and mic after connection
+                    await room.localParticipant.enableCameraAndMicrophone();
+                    
                     return room;
                 } catch (error) {
-                    console.error('Connection failed:', error);
-                    throw new Error(`Could not connect to room: ${error.message}`);
+                    throw new Error(`Connection failed: ${error.message}`);
                 }
             }
             
             function setupVideoElements() {
-                // Local video
+                // Local video element
                 const localVideo = document.createElement('video');
                 localVideo.id = 'localVideo';
                 localVideo.autoplay = true;
                 localVideo.muted = true;
                 videoContainer.prepend(localVideo);
-
-                // Safely get video tracks
-                if (room.localParticipant && room.localParticipant.tracks) {
-                    const tracks = Array.from(room.localParticipant.tracks.values());
-                    const videoTracks = tracks.filter(
-                        pub => pub.kind === LivekitClient.Track.Kind.Video
-                    );
-                    
-                    videoTracks.forEach(publication => {
-                        if (publication.track) {
-                            publication.track.attach(localVideo);
-                        }
-                    });
-                }
-
-                // Remote participants
-                if (room.remoteParticipants) {
-                    room.remoteParticipants.forEach(participant => {
-                        addParticipantVideo(participant);
-                    });
+                
+                // Handle local tracks
+                room.localParticipant.on('trackPublished', publication => {
+                    attachTrack(publication, localVideo);
+                });
+                
+                // Check existing local tracks
+                room.localParticipant.tracks.forEach(publication => {
+                    attachTrack(publication, localVideo);
+                });
+                
+                // Handle remote participants
+                room.remoteParticipants.forEach(participant => {
+                    addParticipant(participant);
+                });
+            }
+            
+            function attachTrack(publication, element) {
+                if (publication.track && 
+                    publication.track.kind === LivekitClient.Track.Kind.Video && 
+                    publication.track.mediaStreamTrack) {
+                    publication.track.attach(element);
                 }
             }
-
-            function addParticipantVideo(participant) {
-                if (!participant.tracks) return;
+            
+            function addParticipant(participant) {
+                participant.on('trackPublished', publication => {
+                    if (publication.kind === LivekitClient.Track.Kind.Video) {
+                        const video = document.createElement('video');
+                        video.autoplay = true;
+                        video.setAttribute('data-participant', participant.sid);
+                        videoContainer.appendChild(video);
+                        publication.track.attach(video);
+                    }
+                });
                 
-                const tracks = Array.from(participant.tracks.values());
-                const videoTracks = tracks.filter(
-                    pub => pub.kind === LivekitClient.Track.Kind.Video
-                );
-
-                videoTracks.forEach(publication => {
-                    if (publication.track && publication.isSubscribed) {
+                // Add existing tracks
+                participant.tracks.forEach(publication => {
+                    if (publication.kind === LivekitClient.Track.Kind.Video && publication.isSubscribed) {
                         const video = document.createElement('video');
                         video.autoplay = true;
                         video.setAttribute('data-participant', participant.sid);
@@ -228,19 +262,29 @@
             }
             
             function setupEventListeners() {
+                // Participant events
                 room.on('participantConnected', participant => {
-                    updateStatus(`${participant.identity} joined the call`);
-                    addParticipantVideo(participant);
+                    updateStatus(`${participant.identity} joined`);
+                    addParticipant(participant);
                 });
                 
                 room.on('participantDisconnected', participant => {
-                    updateStatus(`${participant.identity} left the call`);
+                    updateStatus(`${participant.identity} left`);
                     document.querySelectorAll(`[data-participant="${participant.sid}"]`).forEach(el => el.remove());
                 });
                 
+                // Connection events
                 room.on('disconnected', () => {
-                    showError('You have been disconnected');
+                    showError('Disconnected from room');
                     setTimeout(() => location.reload(), 3000);
+                });
+                
+                room.on('reconnecting', () => {
+                    updateStatus('Reconnecting...');
+                });
+                
+                room.on('reconnected', () => {
+                    updateStatus('Reconnected!');
                 });
             }
             
