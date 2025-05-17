@@ -176,22 +176,30 @@
                 localVideo.autoplay = true;
                 localVideo.muted = true;
                 videoContainer.prepend(localVideo);
-                
-                // Attach local video track if available
-                room.localParticipant.videoTracks.forEach(publication => {
+
+                // Get all video track publications (updated for v2)
+                const videoPublications = Array.from(room.localParticipant.tracks.values())
+                    .filter(pub => pub.kind === LivekitClient.Track.Kind.Video);
+
+                // Attach local video tracks
+                videoPublications.forEach(publication => {
                     if (publication.track) {
                         publication.track.attach(localVideo);
                     }
                 });
-                
+
                 // Remote participants
-                room.participants.forEach(participant => {
+                room.remoteParticipants.forEach(participant => {
                     addParticipantVideo(participant);
                 });
             }
             
             function addParticipantVideo(participant) {
-                participant.videoTracks.forEach(publication => {
+                // Get all video track publications (v2 compatible)
+                const videoPublications = Array.from(participant.tracks.values())
+                    .filter(pub => pub.kind === LivekitClient.Track.Kind.Video);
+
+                videoPublications.forEach(publication => {
                     if (publication.track) {
                         const video = document.createElement('video');
                         video.autoplay = true;
