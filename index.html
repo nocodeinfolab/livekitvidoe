@@ -94,7 +94,7 @@
             let room;
             
             // Check if LiveKit client is loaded
-            if (typeof LiveKitClient === 'undefined') {
+            if (typeof livekit === 'undefined') {
                 showError('LiveKit client failed to load. Please refresh the page.');
                 startButton.disabled = true;
                 return;
@@ -154,7 +154,7 @@
             
             async function connectToRoom(url, token) {
                 try {
-                    const room = new LiveKitClient.Room({
+                    const room = new livekit.Room({
                         adaptiveStream: true,
                         dynacast: true
                     });
