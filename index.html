@@ -133,12 +133,7 @@
                 } catch (error) {
                     console.error('Error:', error);
                     showError(error.message);
-                    if (localStream) {
-                        localStream.getTracks().forEach(track => track.stop());
-                    }
-                    if (room) {
-                        room.disconnect();
-                    }
+                    cleanup();
                     startButton.disabled = false;
                     startButton.textContent = 'Try Again';
                 }
@@ -198,7 +193,24 @@
                     });
                     
                     // Enable camera and mic after connection
-                    await room.localParticipant.enableCameraAndMicrophone();
+                    if (localStream) {
+                        const videoTrack = localStream.getVideoTracks()[0];
+                        const audioTrack = localStream.getAudioTracks()[0];
+                        
+                        if (videoTrack) {
+                            await room.localParticipant.publishTrack(videoTrack, {
+                                name: 'webcam',
+                                simulcast: true,
+                                encoding: LivekitClient.VideoPresets.h720.encoding
+                            });
+                        }
+                        
+                        if (audioTrack) {
+                            await room.localParticipant.publishTrack(audioTrack, {
+                                name: 'microphone'
+                            });
+                        }
+                    }
                     
                     return room;
                 } catch (error) {
@@ -214,17 +226,28 @@
                 localVideo.muted = true;
                 videoContainer.prepend(localVideo);
                 
+                // Attach local stream if available
+                if (localStream) {
+                    localVideo.srcObject = localStream;
+                }
+                
                 // Handle local tracks
                 room.localParticipant.on('trackPublished', publication => {
                     attachTrack(publication, localVideo);
                 });
                 
-                // Check existing local tracks
-                room.localParticipant.tracks.forEach(publication => {
-                    attachTrack(publication, localVideo);
+                // Handle remote participants
+                room.on('trackPublished', (publication, participant) => {
+                    if (participant !== room.localParticipant) {
+                        const video = document.createElement('video');
+                        video.autoplay = true;
+                        video.setAttribute('data-participant', participant.sid);
+                        videoContainer.appendChild(video);
+                        attachTrack(publication, video);
+                    }
                 });
                 
-                // Handle remote participants
+                // Add existing remote participants
                 room.remoteParticipants.forEach(participant => {
                     addParticipant(participant);
                 });
@@ -239,19 +262,10 @@
             }
             
             function addParticipant(participant) {
-                participant.on('trackPublished', publication => {
-                    if (publication.kind === LivekitClient.Track.Kind.Video) {
-                        const video = document.createElement('video');
-                        video.autoplay = true;
-                        video.setAttribute('data-participant', participant.sid);
-                        videoContainer.appendChild(video);
-                        publication.track.attach(video);
-                    }
-                });
-                
-                // Add existing tracks
                 participant.tracks.forEach(publication => {
-                    if (publication.kind === LivekitClient.Track.Kind.Video && publication.isSubscribed) {
+                    if (publication.track && 
+                        publication.kind === LivekitClient.Track.Kind.Video && 
+                        publication.isSubscribed) {
                         const video = document.createElement('video');
                         video.autoplay = true;
                         video.setAttribute('data-participant', participant.sid);
@@ -276,6 +290,7 @@
                 // Connection events
                 room.on('disconnected', () => {
                     showError('Disconnected from room');
+                    cleanup();
                     setTimeout(() => location.reload(), 3000);
                 });
                 
@@ -302,6 +317,15 @@
                 statusElement.textContent = '';
                 errorElement.textContent = '';
                 videoContainer.innerHTML = '';
+            }
+            
+            function cleanup() {
+                if (localStream) {
+                    localStream.getTracks().forEach(track => track.stop());
+                }
+                if (room) {
+                    room.disconnect();
+                }
             }
         });
     </script>
